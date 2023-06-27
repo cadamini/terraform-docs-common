@@ -48,12 +48,16 @@ Attribute                        | Description
 ---------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 `hosted-json-state-download-url` | A URL from which you can download the state data in a [stable format](/terraform/internals/json-format) appropriate for external integrations to consume. Only available if the state was created by Terraform 1.3+.
 `hosted-state-download-url`      | A URL from which you can download the raw state data, in the format used internally by Terraform.
+`hosted-json-state-upload-url`   | A URL to which you can upload the state data, in a [stable format](/terraform/internals/json-format) appropriate for external integrations to consume. Only available if the JSON state content has not been uploaded.
+`hosted-state-upload-url`        | A URL to which you can upload the state data, in the format used internally by Terraform. Only available if the state content has not been uploaded.
 `modules`                        | Extracted information about the Terraform modules in this state data. Populated asynchronously.
 `providers`                      | Extracted information about the Terraform providers used for resources in this state data. Populated asynchronously.
+`provisional`                    | A boolean flag that denotes a state version that was created but has not yet marked as the current version for a workspace.
 `resources`                      | Extracted information about the resources in this state data. Populated asynchronously.
 `resources-processed`            | A Boolean flag indicating whether Terraform Cloud has finished asynchronously extracting outputs, resources, and other information about this state data.
 `serial`                         | The serial number of this state instance, which increases every time Terraform creates new state in the workspace.
 `state-version`                  | The version of the internal state format used for this state. Different Terraform versions read and write different format versions, but it only changes infrequently.
+`status`                         | Indicates a state version's content upload status, can be `pending`, `finalized` or `discarded`.
 `terraform-version`              | The Terraform version that created this state. Populated asynchronously.
 `vcs-commit-sha`                 | The SHA of the configuration commit used in the Terraform run that produced this state. Only present if the workspace is connected to a VCS repository.
 `vcs-commit-url`                 | A link to the configuration commit used in the Terraform run that produced this state. Only present if the workspace is connected to a VCS repository.
@@ -98,10 +102,10 @@ Properties without a default value are required.
 |--------------------------------------|---------|-----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `data.type`                          | string  |           | Must be `"state-versions"`.                                                                                                                                                                                                                                                                |
 | `data.attributes.serial`             | integer |           | The serial of the state version. Must match the serial value extracted from the raw state file.                                                                                                                                                                                            |
-| `data.attributes.md5`                | string  |           | An MD5 hash of the raw state version                                                                                                                                                                                                                                                       |
-| `data.attributes.state`              | string  |           | Base64 encoded raw state file                                                                                                                                                                                                                                                              |
+| `data.attributes.md5`                | string  |           | An MD5 hash of the raw state version.                                                                                                                                                                                                                                                       |
+| `data.attributes.state`              | string  | (nothing) | **Optional** Base64 encoded raw state file. If not included in this request, `status` will be `pending` until state is uploaded to `hosted-state-upload-url`.                                                                                                                                                                                                                                                              |
 | `data.attributes.lineage`            | string  | (nothing) | **Optional** Lineage of the state version. Should match the lineage extracted from the raw state file. Early versions of terraform did not have the concept of lineage, so this is an optional attribute.                                                                                  |
-| `data.attributes.json-state`         | string  | (nothing) | **Optional** Base64 encoded json state, as expressed by `terraform show -json`. See [JSON Output Format](/terraform/internals/json-format) for more details                                                                                                                                          |
+| `data.attributes.json-state`         | string  | (nothing) | **Optional** Base64 encoded json state, as expressed by `terraform show -json`. See [JSON Output Format](/terraform/internals/json-format) for more details.                                                                                                                                          |
 | `data.attributes.json-state-outputs` | string  | (nothing) | **Optional** Base64 encoded output values as represented by `terraform show -json` (the contents of the values/outputs key). If provided, the workspace outputs populate immediately. If omitted, Terraform Cloud populates the workspace outputs from the given state after a short time. |
 | `data.relationships.run.data.id`     | string  | (nothing) | **Optional** The ID of the run to associate with the state version.                                                                                                                                                                                                                        |
 
@@ -155,6 +159,10 @@ curl \
             "created-at": "2018-07-12T20:32:01.490Z",
             "hosted-state-download-url": "https://archivist.terraform.io/v1/object/f55b739b-ff03-4716-b436-726466b96dc4",
             "hosted-json-state-download-url": "https://archivist.terraform.io/v1/object/4fde7951-93c0-4414-9a40-f3abc4bac490",
+            "hosted-state-upload-url": null,
+            "hosted-json-state-upload-url": null,
+            "status": "finalized",
+            "provisional": true,
             "serial": 1
         },
         "links": {
@@ -162,6 +170,26 @@ curl \
         }
     }
 }
+```
+
+## Upload State and JSON State
+
+-> **Note:** While you can upload state version content in the same request when creating a state version, we strongly recommended that you upload content directly to the provided URL.
+
+`PUT https://archivist.terraform.io/v1/object/<UNIQUE OBJECT ID>`
+
+**The URLs are provided in the `hosted-state-upload-url` and `hosted-json-state-upload-url` attributes when creating a `state-version` resource. Once uploaded, the URL is hidden on the resource and no longer available.**
+
+### Sample Request
+
+**@filename is the name of Terraform state file you wish to upload.**
+
+```shell
+curl \
+  --header "Content-Type: application/octet-stream" \
+  --request PUT \
+  --data-binary @filename \
+  https://archivist.terraform.io/v1/object/4c44d964-eba7-4dd5-ad29-1ece7b99e8da
 ```
 
 ## List State Versions for a Workspace
@@ -176,12 +204,13 @@ Listing state versions requires permission to read state versions for the worksp
 
 This endpoint supports pagination [with standard URL query parameters](/terraform/cloud-docs/api-docs#query-parameters). Remember to percent-encode `[` as `%5B` and `]` as `%5D` if your tooling doesn't automatically encode URLs.
 
-| Parameter                    | Description                                                                    |
-|------------------------------|--------------------------------------------------------------------------------|
-| `filter[workspace][name]`    | **Required** The name of one workspace to list versions for.                   |
-| `filter[organization][name]` | **Required** The name of the organization that owns the desired workspace.     |
-| `page[number]`               | **Optional.** If omitted, the endpoint will return the first page.             |
-| `page[size]`                 | **Optional.** If omitted, the endpoint will return 20 state versions per page. |
+| Parameter                    | Description                                                                            |
+|------------------------------|----------------------------------------------------------------------------------------|
+| `filter[workspace][name]`    | **Required** The name of one workspace to list versions for.                           |
+| `filter[organization][name]` | **Required** The name of the organization that owns the desired workspace.             |
+| `filter[status]`             | **Optional.** Filter state versions by status: `pending`, `finalized`, or `discarded`. |
+| `page[number]`               | **Optional.** If omitted, the endpoint will return the first page.                     |
+| `page[size]`                 | **Optional.** If omitted, the endpoint will return 20 state versions per page.         |
 
 ### Sample Request
 
@@ -204,7 +233,11 @@ curl \
                 "created-at": "2021-06-08T01:22:03.794Z",
                 "size": 940,
                 "hosted-state-download-url": "https://archivist.terraform.io/v1/object/...",
+                "hosted-state-upload-url": null,
                 "hosted-json-state-download-url": "https://archivist.terraform.io/v1/object/...",
+                "hosted-json-state-upload-url": null,
+                "status": "finalized",
+                "provisional": false,
                 "modules": {
                     "root": {
                         "null-resource": 1,
@@ -235,7 +268,7 @@ curl \
                         "provider": "provider[\"registry.terraform.io/hashicorp/null\"]"
                     }
                 ],
-                "resources-processed": false,
+                "resources-processed": true,
                 "serial": 9,
                 "state-version": 4,
                 "terraform-version": "0.15.4",
@@ -293,7 +326,11 @@ curl \
                 "created-at": "2021-06-01T21:40:25.941Z",
                 "size": 819,
                 "hosted-state-download-url": "https://archivist.terraform.io/v1/object/...",
+                "hosted-state-upload-url": null,
                 "hosted-json-state-download-url": "https://archivist.terraform.io/v1/object/...",
+                "hosted-json-state-upload-url": null,
+                "status": "finalized",
+                "provisional": false,
                 "modules": {
                     "root": {
                         "data.terraform-remote-state": 1
@@ -313,7 +350,7 @@ curl \
                         "provider": "provider[\"terraform.io/builtin/terraform\"]"
                     }
                 ],
-                "resources-processed": false,
+                "resources-processed": true,
                 "serial": 8,
                 "state-version": 4,
                 "terraform-version": "0.15.4",
@@ -421,7 +458,11 @@ curl \
             "created-at": "2021-06-08T01:22:03.794Z",
             "size": 940,
             "hosted-state-download-url": "https://archivist.terraform.io/v1/object/...",
+            "hosted-state-upload-url": null,
             "hosted-json-state-download-url": "https://archivist.terraform.io/v1/object/...",
+            "hosted-json-state-upload-url": null,
+            "status": "finalized",
+            "provisional": false,
             "modules": {
                 "root": {
                     "null-resource": 1,
@@ -452,7 +493,7 @@ curl \
                     "provider": "provider[\"registry.terraform.io/hashicorp/null\"]"
                 }
             ],
-            "resources-processed": false,
+            "resources-processed": true,
             "serial": 9,
             "state-version": 4,
             "terraform-version": "0.15.4",
@@ -543,7 +584,11 @@ curl \
             "created-at": "2021-06-08T01:22:03.794Z",
             "size": 940,
             "hosted-state-download-url": "https://archivist.terraform.io/v1/object/...",
+            "hosted-state-upload-url": null,
             "hosted-json-state-download-url": "https://archivist.terraform.io/v1/object/...",
+            "hosted-json-state-upload-url": null,
+            "status": "finalized",
+            "provisional": false,
             "modules": {
                 "root": {
                     "null-resource": 1,
@@ -574,7 +619,7 @@ curl \
                     "provider": "provider[\"registry.terraform.io/hashicorp/null\"]"
                 }
             ],
-            "resources-processed": false,
+            "resources-processed": true,
             "serial": 9,
             "state-version": 4,
             "terraform-version": "0.15.4",
@@ -704,7 +749,9 @@ curl \
             "created-at": "2022-11-22T01:22:03.794Z",
             "size": 940,
             "hosted-state-download-url": "https://archivist.terraform.io/v1/object/...",
+            "hosted-state-upload-url": null,
             "hosted-json-state-download-url": "https://archivist.terraform.io/v1/object/...",
+            "hosted-json-state-upload-url": null,
             "modules": {
                 "root": {
                     "null-resource": 1,
@@ -735,7 +782,7 @@ curl \
                     "provider": "provider[\"registry.terraform.io/hashicorp/null\"]"
                 }
             ],
-            "resources-processed": false,
+            "resources-processed": true,
             "serial": 9,
             "state-version": 4,
             "terraform-version": "1.3.5"

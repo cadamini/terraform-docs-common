@@ -1529,7 +1529,7 @@ $ curl \
 
 ## Unlock a workspace
 
-This endpoint unlocks a workspace.
+This endpoint unlocks a workspace. Unlocking a workspace will set the current state version if there are any provisional state versions available.
 
 `POST /workspaces/:workspace_id/actions/unlock`
 
@@ -1691,7 +1691,7 @@ $ curl \
 
 ## Force Unlock a workspace
 
-This endpoint force unlocks a workspace. Only users with admin access are authorized to force unlock a workspace.
+This endpoint force unlocks a workspace. Only users with admin access are authorized to force unlock a workspace. Force unlocking the workspace will attempt to find the latest finalized state version to set as the current if there are any provisional state versions available. It is possible that the latest finalized state version is not the most recently created state version.
 
 `POST /workspaces/:workspace_id/actions/force-unlock`
 
